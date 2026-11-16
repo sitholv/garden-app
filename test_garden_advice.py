@@ -3,7 +3,10 @@
 import contextlib
 import importlib
 import io
+import subprocess
+import sys
 import unittest
+from unittest.mock import patch
 
 import garden_advice
 from garden_advice import PLANT_ADVICE, SEASON_ADVICE, get_advice
@@ -57,6 +60,50 @@ class AdviceTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             importlib.reload(garden_advice)
         self.assertEqual(output.getvalue(), "")
+
+
+class ConsoleTests(unittest.TestCase):
+    """Check real interaction, invalid choices and deliberate cancellation."""
+
+    def test_main_accepts_valid_choices(self):
+        """Both user choices determine the final advice, not fixed defaults."""
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=["winter", "vegetable"]):
+            with contextlib.redirect_stdout(output):
+                status = garden_advice.main()
+        self.assertEqual(status, 0)
+        self.assertIn(get_advice("winter", "vegetable"), output.getvalue())
+
+    def test_invalid_choices_are_retried(self):
+        """Bad input is explained and can be corrected for either prompt."""
+        output = io.StringIO()
+        entries = ["rainy", " WINTER ", "tree", " Vegetable "]
+        with patch("builtins.input", side_effect=entries):
+            with contextlib.redirect_stdout(output):
+                garden_advice.main()
+        self.assertEqual(output.getvalue().count("Choose one of:"), 2)
+        self.assertIn(get_advice("winter", "vegetable"), output.getvalue())
+
+    def test_cancel_is_clean(self):
+        """Closed input and Ctrl+C do not expose implementation tracebacks."""
+        for exception in [EOFError, KeyboardInterrupt]:
+            with self.subTest(exception=exception.__name__):
+                output = io.StringIO()
+                with patch("builtins.input", side_effect=exception):
+                    with contextlib.redirect_stdout(output):
+                        self.assertEqual(garden_advice.main(), 0)
+                self.assertIn("cancelled", output.getvalue())
+
+    def test_real_console_entrypoint(self):
+        """A separate Python process can receive piped terminal input."""
+        result = subprocess.run(
+            [sys.executable, "garden_advice.py"],
+            input="summer\nflower\n", text=True, capture_output=True,
+            check=False, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(get_advice("summer", "flower"), result.stdout)
+        self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":
